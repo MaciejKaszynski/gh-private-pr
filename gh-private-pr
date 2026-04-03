@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+set -e
+
+GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null) || { echo "Error: not in a git repo" >&2; exit 1; }
+CONFIG_FILE="$GIT_ROOT/.git/gh-private-pr-config"
+
+load_config() {
+  PRIVATE_REMOTE=""
+  PUBLIC_REMOTE=""
+  PR_BRANCH=""
+  if [[ -f "$CONFIG_FILE" ]]; then
+    # shellcheck source=/dev/null
+    source "$CONFIG_FILE"
+  fi
+}
+
+save_config() {
+  printf 'PRIVATE_REMOTE=%q\nPUBLIC_REMOTE=%q\nPR_BRANCH=%q\n' \
+    "$PRIVATE_REMOTE" "$PUBLIC_REMOTE" "$PR_BRANCH" > "$CONFIG_FILE"
+}
+
+# Extract owner/repo from a GitHub remote URL
+remote_to_repo() {
+  local url="$1"
+  url="${url%.git}"
+  # git@github.com:owner/repo  or  https://github.com/owner/repo
+  url="${url##*github.com[:/]}"
+  echo "$url"
+}
+
+usage() {
+  echo "Usage:"
+  echo "  gh private-pr private <remote>     Set the private remote (name or URL)"
+  echo "  gh private-pr public <remote>      Set the public remote (name or URL)"
+  echo "  gh private-pr add <branch-name>    Create branches and push to private remote"
+  echo "  gh private-pr publish               Push verified branch to public remote (without -verified suffix)"
+  echo "  gh private-pr create-pr            Create a PR on the public repo"
+  echo "  gh private-pr status               Show current config"
+}
+
+cmd_set_private() {
+  local remote="$1"
+  [[ -z "$remote" ]] && { echo "Error: remote required" >&2; exit 1; }
+  load_config
+  PRIVATE_REMOTE="$remote"
+  save_config
+  echo "Private remote set to: $remote"
+}
+
+cmd_set_public() {
+  local remote="$1"
+  [[ -z "$remote" ]] && { echo "Error: remote required" >&2; exit 1; }
+  load_config
+  PUBLIC_REMOTE="$remote"
+  save_config
+  echo "Public remote set to: $remote"
+}
+
+cmd_add() {
+  local base="$1"
+  [[ -z "$base" ]] && { echo "Error: branch name required" >&2; usage >&2; exit 1; }
+  load_config
+  [[ -z "$PRIVATE_REMOTE" ]] && {
+    echo "Error: private remote not set. Run: gh private-pr private <remote>" >&2; exit 1
+  }
+
+  local unverified="${base}-unverified"
+  local verified="${base}-verified"
+
+  echo "Creating branch: $verified"
+  git checkout -b "$verified"
+  echo "Creating branch: $unverified"
+  git checkout -b "$unverified"
+
+  echo "Pushing $verified to $PRIVATE_REMOTE"
+  git push -u "$PRIVATE_REMOTE" "$verified"
+  echo "Pushing $unverified to $PRIVATE_REMOTE"
+  git push -u "$PRIVATE_REMOTE" "$unverified"
+
+  PR_BRANCH="$base"
+  save_config
+  echo "Done. Current branch: $unverified"
+}
+
+cmd_publish() {
+  load_config
+  [[ -z "$PUBLIC_REMOTE" ]] && {
+    echo "Error: public remote not set. Run: gh private-pr public <remote>" >&2; exit 1
+  }
+  [[ -z "$PRIVATE_REMOTE" ]] && {
+    echo "Error: private remote not set. Run: gh private-pr private <remote>" >&2; exit 1
+  }
+  [[ -z "$PR_BRANCH" ]] && {
+    echo "Error: no branch added yet. Run: gh private-pr add <branch-name>" >&2; exit 1
+  }
+
+  local verified="${PR_BRANCH}-verified"
+  echo "Pushing $verified to $PUBLIC_REMOTE as $PR_BRANCH"
+  git push -u "$PUBLIC_REMOTE" "${verified}:${PR_BRANCH}"
+}
+
+open_browser() {
+  local url="$1"
+  if command -v open &>/dev/null; then
+    open "$url"
+  elif command -v xdg-open &>/dev/null; then
+    xdg-open "$url"
+  else
+    echo "Open this URL in your browser: $url"
+  fi
+}
+
+cmd_create_pr() {
+  load_config
+  [[ -z "$PUBLIC_REMOTE" ]] && {
+    echo "Error: public remote not set. Run: gh private-pr public <remote>" >&2; exit 1
+  }
+  [[ -z "$PR_BRANCH" ]] && {
+    echo "Error: no branch added yet. Run: gh private-pr add <branch-name>" >&2; exit 1
+  }
+
+  local verified="${PR_BRANCH}-verified"
+
+  # Resolve private remote to URL if needed
+  local private_url="$PRIVATE_REMOTE"
+  if git remote get-url "$PRIVATE_REMOTE" &>/dev/null; then
+    private_url=$(git remote get-url "$PRIVATE_REMOTE")
+  fi
+
+  local private_repo
+  private_repo=$(remote_to_repo "$private_url")
+
+  local unverified="${PR_BRANCH}-unverified"
+
+  # GitHub compare URL: opens PR creation UI with both branches pre-selected
+  local pr_url="https://github.com/${private_repo}/compare/${verified}...${unverified}?expand=1"
+  echo "Opening PR creation page: $unverified -> $verified"
+  open_browser "$pr_url"
+}
+
+cmd_status() {
+  load_config
+  echo "Private remote: ${PRIVATE_REMOTE:-<not set>}"
+  echo "Public remote:  ${PUBLIC_REMOTE:-<not set>}"
+  echo "Branch:         ${PR_BRANCH:-<not set>}"
+}
+
+case "$1" in
+  private)   shift; cmd_set_private "$@" ;;
+  public)    shift; cmd_set_public "$@" ;;
+  add)       shift; cmd_add "$@" ;;
+  create-pr) shift; cmd_create_pr "$@" ;;
+  publish)   shift; cmd_publish "$@" ;;
+  status)    cmd_status ;;
+  --help|-h|"") usage ;;
+  *)
+    echo "Error: unknown command '$1'" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
