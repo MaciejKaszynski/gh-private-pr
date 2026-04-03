@@ -5,7 +5,7 @@ A `gh` CLI extension for managing PRs between private and public GitHub reposito
 ## Installation
 
 ```sh
-gh extension install <your-username>/gh-private-pr
+gh extension install MaciejKaszynski/gh-private-pr
 ```
 
 ## Workflow
@@ -71,3 +71,5 @@ gh private-pr status
 | `create-pr` | Open GitHub PR creation page in browser |
 | `publish` | Push verified branch to public remote as `<branch-name>` |
 | `status` | Show current config |
+
+Note: This tool was created using claude code
